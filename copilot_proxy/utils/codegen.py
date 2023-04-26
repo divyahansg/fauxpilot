@@ -8,13 +8,18 @@ import tritonclient.grpc as client_util
 from tokenizers import Tokenizer
 from tritonclient.utils import np_to_triton_dtype, InferenceServerException
 
+
+from transformers import GPT2Tokenizer
+
 np.finfo(np.dtype("float32"))
 np.finfo(np.dtype("float64"))
 
 
 class CodeGenProxy:
     def __init__(self, host: str = 'triton', port: int = 8001, verbose: bool = False):
-        self.tokenizer = Tokenizer.from_file('/python-docker/cgtok/tokenizer.json')
+        # self.tokenizer = Tokenizer.from_file('/python-docker/cgtok/tokenizer.json')
+        self.tokenizer = GPT2Tokenizer.from_pretrained('/python-docker/pygtok')
+        print("Loaded GPT2Tokenizer...")
         self.client = client_util.InferenceServerClient(url=f'{host}:{port}', verbose=verbose)
         self.PAD_CHAR = 50256
 
@@ -48,7 +53,7 @@ class CodeGenProxy:
             item_offsets = []
 
             for word in word_dict_item:
-                ids = tokenizer.encode(word).ids
+                ids = tokenizer.encode(word) # DEBUG: .ids
 
                 if len(ids) == 0:
                     continue
@@ -80,7 +85,7 @@ class CodeGenProxy:
         # i could've done the conversion from uint32 to int32 in the model but that'd be inefficient.
         np_type = np.int32 if model_name.startswith("py-") else np.uint32
 
-        input_start_ids = np.expand_dims(self.tokenizer.encode(prompt).ids, 0)
+        input_start_ids = np.expand_dims(self.tokenizer.encode(prompt), 0) # DEBUG: .ids
         input_start_ids = np.repeat(input_start_ids, n, axis=0).astype(np_type)
         prompt_len = input_start_ids.shape[1]
         input_len = prompt_len * np.ones([input_start_ids.shape[0], 1]).astype(np_type)
@@ -112,7 +117,7 @@ class CodeGenProxy:
         runtime_top_k = top_k * np.ones([input_start_ids.shape[0], 1]).astype(np_type)
         runtime_top_p = top_p * np.ones([input_start_ids.shape[0], 1]).astype(np.float32)
         beam_search_diversity_rate = 0.0 * np.ones([input_start_ids.shape[0], 1]).astype(np.float32)
-        random_seed = np.random.randint(0, 2 ** 31 - 1, (input_start_ids.shape[0], 1), dtype=np.int32)
+        random_seed = np.random.randint(0, 2 ** 31 - 1, (input_start_ids.shape[0], 1), dtype=np.uint64)
         temperature = temperature * np.ones([input_start_ids.shape[0], 1]).astype(np.float32)
         len_penalty = 1.0 * np.ones([input_start_ids.shape[0], 1]).astype(np.float32)
         repetition_penalty = frequency_penalty * np.ones([input_start_ids.shape[0], 1]).astype(np.float32)
@@ -170,7 +175,7 @@ class CodeGenProxy:
         sequence_lengths = result.as_numpy("sequence_length").squeeze(1)
         gen_len = sequence_lengths - input_len.squeeze(1)
 
-        decoded = self.tokenizer.decode_batch([out[prompt_len:prompt_len + g] for g, out in zip(gen_len, output_data)])
+        decoded = self.tokenizer.batch_decode([out[prompt_len:prompt_len + g] for g, out in zip(gen_len, output_data)]) # DEBUG: batch_decode
         trimmed = [self.trim_with_stopwords(d, stop_words) for d in decoded]
 
         choices = []
