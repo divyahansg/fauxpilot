@@ -1,6 +1,7 @@
 import logging
 import os
 
+import requests
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -74,6 +75,16 @@ async def completions(data: OpenAIinput):
             content=content,
             media_type="application/json"
         )
+
+@app.get("/ready")
+async def ready():
+    try:
+        res = requests.get('http://localhost:8000/v2/health/ready')
+        if res.ok:
+            return Response(status_code=200)
+        return Response(status_code=500)
+    except:
+        return Response(status_code=500)
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=5000)
