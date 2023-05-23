@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import List
 
 import requests
 import uvicorn
@@ -54,7 +55,7 @@ def get_copilot_token():
 async def completions(data: OpenAIinput):
     data = data.dict()
     try:
-        content = codegen(data=data)
+        content = codegen(data=data, batch=False)
     except codegen.TokensExceedsMaximum as E:
         raise FauxPilotException(
             message=str(E),
@@ -75,6 +76,26 @@ async def completions(data: OpenAIinput):
             content=content,
             media_type="application/json"
         )
+
+
+@app.post("/v1/batch-completions")
+async def batch_completions(data: List[OpenAIinput]):
+    data = [d.dict() for d in data]
+    try:
+        content = codegen(data=data, batch=True)
+    except codegen.TokensExceedsMaximum as E:
+        raise FauxPilotException(
+            message=str(E),
+            error_type="invalid_request_error",
+            param=None,
+            code=None,
+        )
+
+    return Response(
+        content=content,
+        status_code=200,
+        media_type="application/json"
+    )
 
 @app.get("/ready")
 async def ready():

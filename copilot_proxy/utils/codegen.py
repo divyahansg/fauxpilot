@@ -18,7 +18,7 @@ np.finfo(np.dtype("float64"))
 class CodeGenProxy:
     def __init__(self, host: str = 'triton', port: int = 8001, verbose: bool = False):
         # self.tokenizer = Tokenizer.from_file('/python-docker/cgtok/tokenizer.json')
-        self.tokenizer = GPT2Tokenizer.from_pretrained('/python-docker/pygtok')
+        self.tokenizer = GPT2Tokenizer.from_pretrained('/python-docker/pygtok', padding_side='left')
         print("Loaded GPT2Tokenizer...")
         self.client = client_util.InferenceServerClient(url=f'{host}:{port}', verbose=verbose)
         self.PAD_CHAR = 50256
@@ -77,9 +77,113 @@ class CodeGenProxy:
 
         return np.array([flat_ids, offsets], dtype="int32").transpose((1, 0, 2))
 
+    def batch_generate(self, data):
+        model_name = "fastertransformer"
+        max_tokens = 256
+        stop_words = ["\nYou:", "<|endoftext|>"] # TODO: support custom ones, must be fixed number
+        top_k = 0
+        top_p = 1.0
+        temperature = 0.8
+        frequency_penalty = 1.0
+        want_logprobs = False
+
+        np_type = np.uint32
+        batch_size = len(data)
+        prompts = [d['prompt'] for d in data]
+        print("PROMPTS", prompts)
+        inputs_encoded = self.tokenizer.batch_encode_plus(
+            prompts, 
+            padding='longest', 
+            return_tensors='np',
+            return_length=True,
+            return_attention_mask=False,
+            return_token_type_ids=False
+        )
+        input_ids = inputs_encoded['input_ids'].astype(np_type)
+        max_input_len = max(inputs_encoded['length'])
+        input_len = max_input_len * np.ones([input_ids.shape[0], 1]).astype(np_type)
+        output_len = np.ones_like(input_len).astype(np_type) * max_tokens
+        runtime_top_k = top_k * np.ones([input_ids.shape[0], 1]).astype(np_type)
+        runtime_top_p = top_p * np.ones([input_ids.shape[0], 1]).astype(np.float32)
+        beam_search_diversity_rate = 0.0 * np.ones([input_ids.shape[0], 1]).astype(np.float32)
+        random_seed = np.random.randint(0, 2 ** 31 - 1, (input_ids.shape[0], 1), dtype=np.uint64)
+        temperature = temperature * np.ones([input_ids.shape[0], 1]).astype(np.float32)
+        len_penalty = 1.0 * np.ones([input_ids.shape[0], 1]).astype(np.float32)
+        repetition_penalty = frequency_penalty * np.ones([input_ids.shape[0], 1]).astype(np.float32)
+        is_return_log_probs = want_logprobs * np.ones([input_ids.shape[0], 1]).astype(np.bool_)
+        beam_width = (1 * np.ones([input_ids.shape[0], 1])).astype(np_type)
+        start_ids = self.PAD_CHAR * np.ones([input_ids.shape[0], 1]).astype(np_type)
+        end_ids = self.PAD_CHAR * np.ones([input_ids.shape[0], 1]).astype(np_type)
+        stop_word_list = np.repeat(
+            self.to_word_list_format([stop_words], self.tokenizer), 
+            input_ids.shape[0], 
+            axis=0
+        )
+        bad_words_list = np.concatenate(
+            [np.zeros([input_ids.shape[0], 1, 1]).astype(np.int32), 
+            (-1 * np.ones([input_ids.shape[0], 1, 1])).astype(np.int32)], 
+            axis=1
+        )
+
+        inputs = [
+            self.prepare_tensor("input_ids", input_ids),
+            self.prepare_tensor("input_lengths", input_len),
+            self.prepare_tensor("request_output_len", output_len),
+            self.prepare_tensor("runtime_top_k", runtime_top_k),
+            self.prepare_tensor("runtime_top_p", runtime_top_p),
+            self.prepare_tensor("beam_search_diversity_rate", beam_search_diversity_rate),
+            self.prepare_tensor("random_seed", random_seed),
+            self.prepare_tensor("temperature", temperature),
+            self.prepare_tensor("len_penalty", len_penalty),
+            self.prepare_tensor("repetition_penalty", repetition_penalty),
+            self.prepare_tensor("is_return_log_probs", is_return_log_probs),
+            self.prepare_tensor("beam_width", beam_width),
+            self.prepare_tensor("start_id", start_ids),
+            self.prepare_tensor("end_id", end_ids),
+            self.prepare_tensor("bad_words_list", bad_words_list),
+            self.prepare_tensor("stop_words_list", stop_word_list),
+        ]
+        print(input_len)
+        for inp in inputs:
+            print(inp.name(), inp.shape(), inp.datatype())
+        result = self.client.infer(model_name, inputs)
+    
+        output_data = result.as_numpy("output_ids")
+        if output_data is None:
+            raise RuntimeError("No output data")
+
+        # All of these squeeze(1)s are to remove the beam width dimension.
+        output_data = output_data.squeeze(1)
+        if want_logprobs:
+            lp_data = result.as_numpy("output_log_probs").squeeze(1)
+            # clp_data = result.as_numpy("cum_log_probs").squeeze(1)
+        else:
+            lp_data = [None] * output_data.shape[0]
+        sequence_lengths = result.as_numpy("sequence_length").squeeze(1)
+        gen_len = sequence_lengths - input_len.squeeze(1)
+
+        decoded = self.tokenizer.batch_decode([out[max_input_len:max_input_len + g] for g, out in zip(gen_len, output_data)]) # DEBUG: batch_decode
+        trimmed = [self.trim_with_stopwords(d, stop_words) for d in decoded]
+
+        return json.dumps(trimmed)
+
+        # choices = []
+        # for i, (text, tokens, g) in enumerate(zip(trimmed, output_data, gen_len)):
+        #     reason = "length" if max_tokens == g else "stop"
+        #     print(text)
+            # choice = {
+            #     'text': text,
+            #     'index': i,
+            #     'finish_reason': reason,
+            #     'logprobs': None,
+            # }
+            # choices.append(choice)        
+        
+
+
     def generate(self, data):
         prompt = data['prompt']
-        n = data.get('n', 1)
+        n = data.get('n', 2)
         model_name = data["model"]
         # ugly hack to set the data type correctly. Huggingface models want int32, but fastertransformer needs uint32
         # i could've done the conversion from uint32 to int32 in the model but that'd be inefficient.
@@ -158,6 +262,9 @@ class CodeGenProxy:
             self.prepare_tensor("bad_words_list", bad_words_list),
             self.prepare_tensor("stop_words_list", stop_word_list),
         ]
+
+        for inp in inputs:
+            print(inp.name(), inp.shape())
 
         result = self.client.infer(model_name, inputs)
 
@@ -247,7 +354,7 @@ class CodeGenProxy:
         completion['choices'] = choices
         return json.dumps(completion)
 
-    def __call__(self, data: dict):
+    def call(self, data):
         st = time.time()
         try:
             completion, choices = self.generate(data)
@@ -268,3 +375,27 @@ class CodeGenProxy:
             return self.streamed_response(completion, choices)
         else:
             return self.non_streamed_response(completion, choices)
+
+    def batch_call(self, data):
+        st = time.time()
+        try:
+            completions = self.batch_generate(data)
+        except InferenceServerException as exc:
+            # status: unavailable -- this happens if the `model` string is invalid
+            print(exc)
+            if exc.status() == 'StatusCode.UNAVAILABLE':
+                print(
+                    f"WARNING: Model '{data['model']}' is not available. Please ensure that "
+                    "`model` is set to either 'fastertransformer' or 'py-model' depending on "
+                    "your installation"
+                )
+            completions = []
+        ed = time.time()
+        print(f"Returned completion in {(ed - st) * 1000} ms")
+        return completions
+
+    def __call__(self, data: dict | list, batch: bool):
+        if batch:
+            return self.batch_call(data)
+        else:
+            return self.call(data)
