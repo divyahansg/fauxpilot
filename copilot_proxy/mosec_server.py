@@ -1,4 +1,5 @@
 import os
+import json
 import time
 from typing import List
 
@@ -23,7 +24,7 @@ class Inference(Worker):
         logger.debug("received data: %s", data)
         result = self.engine(data=data, batch=True)
         logger.debug("result: %s", result)
-        return result
+        return json.loads(result)
         # try:
         #     count_time = float(data["time"])
         # except KeyError as err:
@@ -34,9 +35,10 @@ class Inference(Worker):
 if __name__ == "__main__":
     server = Server()
     server.append_worker(
-        Inference, 
-        num=5, 
-        max_batch_size=8, 
-        max_wait_time=1000, 
+        Inference,
+        num=5,
+        max_batch_size=8,
+        max_wait_time=1000,
+        timeout=10
     )
     server.run()

@@ -31,4 +31,4 @@ COPY copilot_proxy .
 
 EXPOSE 5000
 
-CMD ["python", "mosec_server.py", "--address", "0.0.0.0", "--port", "5000"]
+CMD ["python", "mosec_server.py", "--address", "0.0.0.0", "--port", "5000", "--timeout", "20000"]

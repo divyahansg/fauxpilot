@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: triton.Dockerfile
-    command: bash -c "CUDA_VISIBLE_DEVICES=${GPUS} mpirun -n 1 --allow-run-as-root /opt/tritonserver/bin/tritonserver --model-repository=/model"
+    command: bash -c "CUDA_VISIBLE_DEVICES=${GPUS} mpirun -n 1 --allow-run-as-root /opt/tritonserver/bin/tritonserver --model-repository=/model --log-verbose=1"
     shm_size: '2gb'
     volumes:
       - ${MODEL_DIR}:/model
@@ -26,8 +26,8 @@ services:
     # For local build
     build:
       context: .
-      dockerfile: proxy.Dockerfile
-    command: uvicorn app:app --host 0.0.0.0 --port 5000
+      dockerfile: mosec.Dockerfile
+    command: python mosec_server.py --address 0.0.0.0 --port 5000 --timeout 20000 --debug
     env_file:
       # Automatically created via ./setup.sh
       - .env
