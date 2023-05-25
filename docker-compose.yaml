@@ -27,7 +27,7 @@ services:
     build:
       context: .
       dockerfile: mosec.Dockerfile
-    command: python mosec_server.py --address 0.0.0.0 --port 5000 --timeout 20000 --debug
+    command: bash -c "./mosec.sh"
     env_file:
       # Automatically created via ./setup.sh
       - .env

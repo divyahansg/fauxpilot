@@ -7,7 +7,8 @@ RUN apt-get update
 RUN apt-get install -y \
     build-essential \
     curl \
-    git
+    git \
+    nginx
 
 # Update new packages
 RUN apt-get update
@@ -31,4 +32,4 @@ COPY copilot_proxy .
 
 EXPOSE 5000
 
-CMD ["python", "mosec_server.py", "--address", "0.0.0.0", "--port", "5000", "--timeout", "20000"]
+CMD ["mosec.sh"]
