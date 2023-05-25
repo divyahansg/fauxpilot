@@ -164,7 +164,7 @@ class CodeGenProxy:
         decoded = self.tokenizer.batch_decode([out[max_input_len:max_input_len + g] for g, out in zip(gen_len, output_data)]) # DEBUG: batch_decode
         trimmed = [self.trim_with_stopwords(d, stop_words) for d in decoded]
 
-        return json.dumps([{ "completion" : t } for t in trimmed])
+        return json.dumps([{ "choices" : [{ "text": t }] } for t in trimmed])
 
     def generate(self, data):
         prompt = data['prompt']
