@@ -78,25 +78,6 @@ async def completions(data: OpenAIinput):
         )
 
 
-@app.post("/v1/batch-completions")
-async def batch_completions(data: List[OpenAIinput]):
-    data = [d.dict() for d in data]
-    try:
-        content = codegen(data=data, batch=True)
-    except codegen.TokensExceedsMaximum as E:
-        raise FauxPilotException(
-            message=str(E),
-            error_type="invalid_request_error",
-            param=None,
-            code=None,
-        )
-
-    return Response(
-        content=content,
-        status_code=200,
-        media_type="application/json"
-    )
-
 @app.get("/ready")
 async def ready():
     try:

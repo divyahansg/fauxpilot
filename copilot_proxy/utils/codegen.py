@@ -77,23 +77,22 @@ class CodeGenProxy:
 
         return np.array([flat_ids, offsets], dtype="int32").transpose((1, 0, 2))
 
-    def batch_generate(self, data):
+    def batch_generate(self, data, logger):
         model_name = "fastertransformer"
-        max_tokens = 256
-        stop_words = ["\nYou:", "<|endoftext|>"] # TODO: support custom ones, must be fixed number
+        stop_words = ["\nYou:", "<|endoftext|>", "<BOT>", "<START>"] # TODO: support custom ones, must be fixed number
         top_k = 0
         top_p = 1.0
-        temperature = 0.8
         frequency_penalty = 1.0
         want_logprobs = False
 
         np_type = np.uint32
         batch_size = len(data)
         prompts = [d['prompt'] for d in data]
-        print("PROMPTS", prompts)
+        max_tokens = [d.get("max_tokens", 128) for d in data]
+        temperature = [d.get("temperature", 0.9) for d in data]
         inputs_encoded = self.tokenizer.batch_encode_plus(
-            prompts, 
-            padding='longest', 
+            prompts,
+            padding='longest',
             return_tensors='np',
             return_length=True,
             return_attention_mask=False,
@@ -102,12 +101,12 @@ class CodeGenProxy:
         input_ids = inputs_encoded['input_ids'].astype(np_type)
         max_input_len = max(inputs_encoded['length'])
         input_len = max_input_len * np.ones([input_ids.shape[0], 1]).astype(np_type)
-        output_len = np.ones_like(input_len).astype(np_type) * max_tokens
+        output_len = np.expand_dims(max_tokens, axis=1).astype(np_type) * np.ones_like(input_len).astype(np_type)
         runtime_top_k = top_k * np.ones([input_ids.shape[0], 1]).astype(np_type)
         runtime_top_p = top_p * np.ones([input_ids.shape[0], 1]).astype(np.float32)
         beam_search_diversity_rate = 0.0 * np.ones([input_ids.shape[0], 1]).astype(np.float32)
         random_seed = np.random.randint(0, 2 ** 31 - 1, (input_ids.shape[0], 1), dtype=np.uint64)
-        temperature = temperature * np.ones([input_ids.shape[0], 1]).astype(np.float32)
+        temperature = np.expand_dims(temperature, axis=1).astype(np.float32) * np.ones([input_ids.shape[0], 1]).astype(np.float32)
         len_penalty = 1.0 * np.ones([input_ids.shape[0], 1]).astype(np.float32)
         repetition_penalty = frequency_penalty * np.ones([input_ids.shape[0], 1]).astype(np.float32)
         is_return_log_probs = want_logprobs * np.ones([input_ids.shape[0], 1]).astype(np.bool_)
@@ -143,11 +142,11 @@ class CodeGenProxy:
             self.prepare_tensor("bad_words_list", bad_words_list),
             self.prepare_tensor("stop_words_list", stop_word_list),
         ]
-        print(input_len)
         for inp in inputs:
-            print(inp.name(), inp.shape(), inp.datatype())
+            logger.debug("Name %s, shape %s, datatype %s", inp.name(), inp.shape(), inp.datatype())
+
         result = self.client.infer(model_name, inputs)
-    
+
         output_data = result.as_numpy("output_ids")
         if output_data is None:
             raise RuntimeError("No output data")
@@ -165,21 +164,7 @@ class CodeGenProxy:
         decoded = self.tokenizer.batch_decode([out[max_input_len:max_input_len + g] for g, out in zip(gen_len, output_data)]) # DEBUG: batch_decode
         trimmed = [self.trim_with_stopwords(d, stop_words) for d in decoded]
 
-        return json.dumps(trimmed)
-
-        # choices = []
-        # for i, (text, tokens, g) in enumerate(zip(trimmed, output_data, gen_len)):
-        #     reason = "length" if max_tokens == g else "stop"
-        #     print(text)
-            # choice = {
-            #     'text': text,
-            #     'index': i,
-            #     'finish_reason': reason,
-            #     'logprobs': None,
-            # }
-            # choices.append(choice)        
-        
-
+        return json.dumps([{ "completion" : t } for t in trimmed])
 
     def generate(self, data):
         prompt = data['prompt']
@@ -262,9 +247,6 @@ class CodeGenProxy:
             self.prepare_tensor("bad_words_list", bad_words_list),
             self.prepare_tensor("stop_words_list", stop_word_list),
         ]
-
-        for inp in inputs:
-            print(inp.name(), inp.shape())
 
         result = self.client.infer(model_name, inputs)
 
@@ -376,26 +358,29 @@ class CodeGenProxy:
         else:
             return self.non_streamed_response(completion, choices)
 
-    def batch_call(self, data):
-        st = time.time()
+    def batch_call(self, data, logger):
         try:
-            completions = self.batch_generate(data)
+            st = time.time()
+            completions = self.batch_generate(data, logger)
+            ed = time.time()
+            logger.info(f"Returned completion in {(ed - st) * 1000} ms")
+            return completions
         except InferenceServerException as exc:
             # status: unavailable -- this happens if the `model` string is invalid
-            print(exc)
+            logger.error(exc)
             if exc.status() == 'StatusCode.UNAVAILABLE':
-                print(
+                logger.error(
                     f"WARNING: Model '{data['model']}' is not available. Please ensure that "
                     "`model` is set to either 'fastertransformer' or 'py-model' depending on "
                     "your installation"
                 )
-            completions = []
-        ed = time.time()
-        print(f"Returned completion in {(ed - st) * 1000} ms")
-        return completions
+            raise exc
+        except Exception as exc:
+            logger.error(exc)
+            raise exc
 
-    def __call__(self, data: dict | list, batch: bool):
+    def __call__(self, data: dict | list, batch: bool, logger = None):
         if batch:
-            return self.batch_call(data)
+            return self.batch_call(data, logger)
         else:
             return self.call(data)
